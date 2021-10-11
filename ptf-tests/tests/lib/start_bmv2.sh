@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Copyright 2020-2021 Open Networking Foundation
+# Copyright 2021-present Princeton University
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+set -xe
+
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+
+CPU_PORT=255
+GRPC_PORT=28000
+
+# Create veths
+for idx in 0 1 2 3 4 5 6 7; do
+    intf0="veth$(($idx*2))"
+    intf1="veth$(($idx*2+1))"
+    if ! ip link show $intf0 &> /dev/null; then
+        ip link add name $intf0 type veth peer name $intf1
+        ip link set dev $intf0 up
+        ip link set dev $intf1 up
+
+        # Set the MTU of these interfaces to be larger than default of
+        # 1500 bytes, so that P4 behavioral-model testing can be done
+        # on jumbo frames.
+        ip link set $intf0 mtu 9500
+        ip link set $intf1 mtu 9500
+
+        # Disable IPv6 on the interfaces, so that the Linux kernel
+        # will not automatically send IPv6 MDNS, Router Solicitation,
+        # and Multicast Listener Report packets on the interface,
+        # which can make P4 program debugging more confusing.
+        #
+        # Testing indicates that we can still send IPv6 packets across
+        # such interfaces, both from scapy to simple_switch, and from
+        # simple_switch out to scapy sniffing.
+        #
+        # https://superuser.com/questions/356286/how-can-i-switch-off-ipv6-nd-ra-transmissions-in-linux
+
+        # IPv6 support is missing from recent versions of Docker for Mac. Make
+        # sure we can disable it before actually doing it.
+        if [ -f /proc/sys/net/ipv6/conf/${intf0}/disable_ipv ]; then
+          sysctl net.ipv6.conf.${intf0}.disable_ipv6=1
+        fi
+        if [ -f /proc/sys/net/ipv6/conf/${intf1}/disable_ipv ]; then
+          sysctl net.ipv6.conf.${intf1}.disable_ipv6=1
+        fi
+    fi
+done
+
+# shellcheck disable=SC2086
+
+if command -v stratum_bmv2 &> /dev/null
+then
+    stratum_bmv2 \
+    --external_stratum_urls=0.0.0.0:${GRPC_PORT} \
+    --persistent_config_dir=/tmp \
+    --forwarding_pipeline_configs_file=/dev/null \
+    --chassis_config_file="${DIR}"/chassis_config.pb.txt \
+    --write_req_log_file=p4rt_write.log \
+    --initial_pipeline=/root/dummy.json \
+    --bmv2_log_level=trace \
+    --cpu_port ${CPU_PORT} \
+    > stratum_bmv2.log 2>&1
+
+elif command -v simple_switch_grpc &> /dev/null
+then
+  simple_switch_grpc \
+  --device-id 1 \
+  -i 1@veth0 -i 2@veth2 3@veth4 -i 4@veth6 5@veth8 -i 6@veth10 7@veth12 -i 8@veth14 \
+  --log-console \
+  -Ltrace \
+  --no-p4 -- \
+  --cpu-port ${CPU_PORT} \
+  --grpc-server-addr 0.0.0.0:${GRPC_PORT} \
+  > stratum_bmv2.log 2>&1
+
+else
+  echo "BMv2 switch process not found"
+  exit 1
+fi

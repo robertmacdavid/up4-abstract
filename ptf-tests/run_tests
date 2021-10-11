@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Copyright 2020-2021 Open Networking Foundation
+# Copyright 2021-present Princeton University
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+set -e
+
+PTF_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+P4SRC_DIR=${PTF_DIR}/../p4src
+P4C_OUT=${P4SRC_DIR}/build
+PTF_IMAGE=${PTF_IMAGE:-undefined}
+PTF_BMV2_IMAGE=${PTF_BMV2_IMAGE:-undefined}
+
+rnd=${RANDOM}
+
+function stop() {
+    set +e
+    echo "*** Stopping ${bmv2RunName}..."
+    docker stop -t0 "${bmv2RunName}" > /dev/null
+}
+trap stop EXIT
+
+it=$(test -t 0 && echo "-it" || echo "-t")
+
+# stratum_bmv2
+bmv2RunName=stratum-bmv2-${rnd}
+echo "*** Starting ${bmv2RunName}..."
+docker run --name ${bmv2RunName} ${it} -d --privileged --rm \
+    -v "${PTF_DIR}":/ptf -w /ptf \
+    --entrypoint ./tests/lib/start_bmv2.sh \
+    "${PTF_BMV2_IMAGE}"
+sleep 2
+
+# tester
+# Run and show log
+testerRunName=tester-${rnd}
+echo "*** Starting ${testerRunName}..."
+# Do not attach stdin if running in an environment without it (e.g., Jenkins)
+docker run --name ${testerRunName} ${it} --privileged --rm \
+    --network "container:${bmv2RunName}" \
+    -v "${PTF_DIR}":/ptf -w /ptf \
+    -v "${P4C_OUT}":/p4c-out \
+    "${PTF_IMAGE}" python3 -u ./tests/lib/runner.py \
+        --bmv2-json /p4c-out/bmv2.json \
+        --p4info /p4c-out/p4info.bin \
+        --grpc-addr localhost:28000 \
+        --device-id 1 \
+        --ptf-dir ./tests \
+        --cpu-port 255 \
+        --port-map /ptf/tests/lib/port_map.json "${@}"

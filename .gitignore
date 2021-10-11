@@ -1,0 +1,8 @@
+*.log
+*.pcap
+.idea
+.DS_Store
+*.swp
+*.pyc
+*/__pycache__
+p4src/build/
